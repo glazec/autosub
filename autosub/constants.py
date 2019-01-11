@@ -98,5 +98,7 @@ LANGUAGE_CODES = {
     'yo': 'Yoruba',
     'zh-CN': 'Chinese (Simplified)',
     'zh-TW': 'Chinese (Traditional)',
+    'zh-Hans': 'Chinese (Simplified) for Azure',
+    'zh-Hant': 'Chinese (Traditional) for Azure',
     'zu': 'Zulu',
 }

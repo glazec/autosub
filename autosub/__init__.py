@@ -8,6 +8,7 @@ from __future__ import absolute_import, print_function, unicode_literals
 
 import argparse
 import audioop
+import uuid
 import json
 import math
 import multiprocessing
@@ -16,7 +17,7 @@ import subprocess
 import sys
 import tempfile
 import wave
-
+import time
 import requests
 from googleapiclient.discovery import build
 from progressbar import ProgressBar, Percentage, Bar, ETA
@@ -47,10 +48,11 @@ def percentile(arr, percent):
     return low_value + high_value
 
 
-class FLACConverter(object): # pylint: disable=too-few-public-methods
+class FLACConverter(object):  # pylint: disable=too-few-public-methods
     """
     Class for converting a region of an input audio or video file into a FLAC audio file
     """
+
     def __init__(self, source_path, include_before=0.25, include_after=0.25):
         self.source_path = source_path
         self.include_before = include_before
@@ -66,17 +68,19 @@ class FLACConverter(object): # pylint: disable=too-few-public-methods
                        "-y", "-i", self.source_path,
                        "-loglevel", "error", temp.name]
             use_shell = True if os.name == "nt" else False
-            subprocess.check_output(command, stdin=open(os.devnull), shell=use_shell)
+            subprocess.check_output(
+                command, stdin=open(os.devnull), shell=use_shell)
             return temp.read()
 
         except KeyboardInterrupt:
             return None
 
 
-class SpeechRecognizer(object): # pylint: disable=too-few-public-methods
+class SpeechRecognizer(object):  # pylint: disable=too-few-public-methods
     """
     Class for performing speech-to-text for an input FLAC file.
     """
+
     def __init__(self, language="en", rate=44100, retries=3, api_key=GOOGLE_SPEECH_API_KEY):
         self.language = language
         self.rate = rate
@@ -86,7 +90,8 @@ class SpeechRecognizer(object): # pylint: disable=too-few-public-methods
     def __call__(self, data):
         try:
             for _ in range(self.retries):
-                url = GOOGLE_SPEECH_API_URL.format(lang=self.language, key=self.api_key)
+                url = GOOGLE_SPEECH_API_URL.format(
+                    lang=self.language, key=self.api_key)
                 headers = {"Content-Type": "audio/x-flac; rate=%d" % self.rate}
 
                 try:
@@ -99,7 +104,7 @@ class SpeechRecognizer(object): # pylint: disable=too-few-public-methods
                         line = json.loads(line)
                         line = line['result'][0]['alternative'][0]['transcript']
                         return line[:1].upper() + line[1:]
-                    except (ValueError, IndexError):                        
+                    except (ValueError, IndexError):
                         # no result
                         continue
 
@@ -107,39 +112,112 @@ class SpeechRecognizer(object): # pylint: disable=too-few-public-methods
             return None
 
 
-class TranslatorWithoutApikey(object): # pylint: disable=too-few-public-methods
+class TranslatorWithoutApikey(object):  # pylint: disable=too-few-public-methods
     """
     Class for translating a sentence from a one language to another using free api.
     """
+
     def __init__(self, src, dst):
         self.url = "".join(
             ["https://translate.googleapis.com/translate_a/single?client=gtx&sl=", src, "&tl=", dst, "&dt=t&q="])
+        self.queries = []
 
-    def __call__(self, sentence):
+    def __call__(self, string):
+        self.addQuery(string)
+
+    def addQuery(self, string):
+        self.queries.append(string)
+
+    def clearQuery(self):
+        self.queries = []
+
+    def translate(self):
+        """
+        Please use "addQuery" to add query string first
+        """
         try:
-            if not sentence:
+            if not self.queries:
                 return None
 
-            self.url += sentence
-            
-            result = requests.get(self.url)
+            self.url += "%0A".join(self.queries)
 
+            result = requests.get(self.url)
             result = json.loads(result.content.decode('utf-8'))
-            result = result[0][0][0]
-            
+            lines = result[0]
+
+            self.queries = []
+            result = []
+
+            for line in lines:
+                result.append(line[0].rstrp("\\n"))
+
+            time.sleep(5)
+
             if result:
                 return result
             else:
                 return None
 
-        except (requests.exceptions.ConnectionError, KeyboardInterrupt, ValueError, IndexError):            
+        except (requests.exceptions.ConnectionError, KeyboardInterrupt, ValueError, IndexError):
             return None
 
 
-class TranslatorWithApikey(object): # pylint: disable=too-few-public-methods
+class TranslatorWithAzureApikey(object):  # pylint: disable=too-few-public-methods
+    """
+    Class for translating a sentence from a one language to another using Azure api.
+    """
+
+    def __init__(self, apikey, src, dst):
+        self.body = []
+        base_url = 'https://api.cognitive.microsofttranslator.com'
+        path = '/translate?api-version=3.0'
+        params = '&from=' + src + '&to=' + dst
+        self.constructed_url = base_url + path + params
+        self.headers = {
+            'Ocp-Apim-Subscription-Key': apikey,
+            'Content-type': 'application/json',
+            'X-ClientTraceId': str(uuid.uuid4())
+        }
+
+    def __call__(self, string):
+        self.addQuery(string)
+
+    def addQuery(self, string):
+        self.body.append({"Text": string})
+
+    def clearQuery(self):
+        self.body = []
+
+    def translate(self):
+        try:
+            if not self.body:
+                return None
+
+            result = requests.post(self.constructed_url,
+                                   headers=self.headers, json=self.body)
+            result = result.json()
+
+            lines = []
+            for line in result:
+                lines.append(line["translations"][0]["text"])
+
+            time.sleep(1)
+
+            self.body = []
+            if lines:
+                return lines
+            else:
+                return None
+
+        except (requests.exceptions.ConnectionError, KeyboardInterrupt, ValueError, IndexError):
+            return None
+
+
+class TranslatorWithApikey(object):  # pylint: disable=too-few-public-methods
     """
     Class for translating a sentence from a one language to another using api key.
     """
+
     def __init__(self, language, api_key, src, dst):
         self.language = language
         self.api_key = api_key
@@ -153,14 +231,14 @@ class TranslatorWithApikey(object): # pylint: disable=too-few-public-methods
             if not sentence:
                 return None
 
-            result = self.service.translations().list( # pylint: disable=no-member
+            result = self.service.translations().list(  # pylint: disable=no-member
                 source=self.src,
                 target=self.dst,
                 q=[sentence]
             ).execute()
 
             if 'translations' in result and result['translations'] and \
-                'translatedText' in result['translations'][0]:
+                    'translatedText' in result['translations'][0]:
                 return result['translations'][0]['translatedText']
 
             return None
@@ -223,7 +301,7 @@ def extract_audio(filename, channels=1, rate=16000):
     return temp.name, rate
 
 
-def find_speech_regions(filename, frame_width=4096, min_region_size=0.5, max_region_size=6): # pylint: disable=too-many-locals
+def find_speech_regions(filename, frame_width=4096, min_region_size=0.5, max_region_size=6):  # pylint: disable=too-many-locals
     """
     Perform voice activity detection on a given audio file.
     """
@@ -262,15 +340,15 @@ def find_speech_regions(filename, frame_width=4096, min_region_size=0.5, max_reg
     return regions
 
 
-def generate_subtitles( # pylint: disable=too-many-locals,too-many-arguments
-        source_path,
-        output=None,
-        concurrency=DEFAULT_CONCURRENCY,
-        src_language=DEFAULT_SRC_LANGUAGE,
-        dst_language=DEFAULT_DST_LANGUAGE,
-        subtitle_file_format=DEFAULT_SUBTITLE_FORMAT,
-        api_key=None,
-    ):
+def generate_subtitles(  # pylint: disable=too-many-locals,too-many-arguments
+    source_path,
+    output=None,
+    concurrency=DEFAULT_CONCURRENCY,
+    src_language=DEFAULT_SRC_LANGUAGE,
+    dst_language=DEFAULT_DST_LANGUAGE,
+    subtitle_file_format=DEFAULT_SUBTITLE_FORMAT,
+    api_key=None,
+):
     """
     Given an input audio/video file, generate subtitles in the specified language and format.
     """
@@ -284,69 +362,87 @@ def generate_subtitles( # pylint: disable=too-many-locals,too-many-arguments
                                   api_key=GOOGLE_SPEECH_API_KEY)
 
     transcripts = []
-    if regions:
-        try:
-            widgets = ["Converting speech regions to FLAC files: ", Percentage(), ' ', Bar(), ' ',
-                       ETA()]
+
+    if not regions:
+        return
+
+    try:
+        widgets = ["Converting speech regions to FLAC files: ",
+                   Percentage(), ' ', Bar(), ' ', ETA()]
+        pbar = ProgressBar(widgets=widgets, maxval=len(regions)).start()
+        extracted_regions = []
+        for i, extracted_region in enumerate(pool.imap(converter, regions)):
+            extracted_regions.append(extracted_region)
+            pbar.update(i)
+        pbar.finish()
+        widgets = ["Performing speech recognition: ",
+                   Percentage(), ' ', Bar(), ' ', ETA()]
+        pbar = ProgressBar(widgets=widgets, maxval=len(regions)).start()
+        for i, transcript in enumerate(pool.imap(recognizer, extracted_regions)):
+            transcripts.append(transcript)
+            pbar.update(i)
+        pbar.finish()
+
+        os.remove(audio_filename)
+
+        if src_language.split("-")[0] != dst_language.split("-")[0]:
+            if api_key:
+                translator = TranslatorWithAzureApikey(api_key, src_language, dst_language)
+                print("Using specific translation API...")
+            else:
+                translator = TranslatorWithoutApikey(
+                    src_language, dst_language)
+                print("Using free translation API...")
+
+            prompt = "Translating from {0} to {1}: ".format(
+                src_language, dst_language)
+            widgets = [prompt, Percentage(), ' ', Bar(), ' ', ETA()]
+
             pbar = ProgressBar(widgets=widgets, maxval=len(regions)).start()
-            extracted_regions = []
-            for i, extracted_region in enumerate(pool.imap(converter, regions)):
-                extracted_regions.append(extracted_region)
+            translated_transcripts = []
+            j = 0
+            result = []
+            for i, transcript in enumerate(pool.imap(translator, transcripts)):
+                j = j + 1
+                if (j == 15) or (i == (len(transcripts) - 1)):
+                    result = translator.translate()
+                    if result:
+                        translated_transcripts.extend(result)
+                    j = j % 15
                 pbar.update(i)
             pbar.finish()
+            print(translated_transcripts)
+            if not translated_transcripts:
+                print("Can not translate sub. Please check your network")
+            else:
+                save_subtitle(regions, translated_transcripts,subtitle_file_format, output, source_path, dst_language)
 
-            widgets = ["Performing speech recognition: ", Percentage(), ' ', Bar(), ' ', ETA()]
-            pbar = ProgressBar(widgets=widgets, maxval=len(regions)).start()
+        save_subtitle(regions, transcripts, subtitle_file_format,
+                      output, source_path, src_language)
 
-            for i, transcript in enumerate(pool.imap(recognizer, extracted_regions)):
-                transcripts.append(transcript)
-                pbar.update(i)
-            pbar.finish()
+    except KeyboardInterrupt:
+        pbar.finish()
+        pool.terminate()
+        pool.join()
+        os.remove(audio_filename)
+        print("Cancelling transcription")
+        raise
 
-            if src_language.split("-")[0] != dst_language.split("-")[0]:
-                if api_key:
-                    translator = TranslatorWithApikey(dst_language,
-                                            api_key,
-                                            dst=dst_language,
-                                            src=src_language)
-                    print("Using free translation API...")
-                else:
-                    translator = TranslatorWithoutApikey(src_language, dst_language)
-                    print("Using specific translation API...")
-                    
-                prompt = "Translating from {0} to {1}: ".format(src_language, dst_language)
-                widgets = [prompt, Percentage(), ' ', Bar(), ' ', ETA()]
-                pbar = ProgressBar(widgets=widgets, maxval=len(regions)).start()
-                translated_transcripts = []
-                for i, transcript in enumerate(pool.imap(translator, transcripts)):
-                    translated_transcripts.append(transcript)
-                    pbar.update(i)
-                pbar.finish()
-                transcripts = translated_transcripts
 
-        except KeyboardInterrupt:
-            pbar.finish()
-            pool.terminate()
-            pool.join()
-            print("Cancelling transcription")
-            raise
-
+def save_subtitle(regions, transcripts, subtitle_file_format, output, source_path, language):
     timed_subtitles = [(r, t) for r, t in zip(regions, transcripts) if t]
     formatter = FORMATTERS.get(subtitle_file_format)
     formatted_subtitles = formatter(timed_subtitles)
 
-    dest = output
-
-    if not dest:
+    if not output:
         base = os.path.splitext(source_path)[0]
-        dest = "{base}.{format}".format(base=base, format=subtitle_file_format)
+        file = "{base}_{lang}.{format}".format(
+            base=base, lang=language, format=subtitle_file_format)
 
-    with open(dest, 'wb') as output_file:
+    with open(file, 'wb') as output_file:
         output_file.write(formatted_subtitles.encode("utf-8"))
 
-    os.remove(audio_filename)
-
-    return dest
+    print("Subtitles file with lang {} created at {}".format(language, file))
 
 
 def validate(args):
@@ -426,7 +522,7 @@ def main():
         return 1
 
     try:
-        subtitle_file_path = generate_subtitles(
+        generate_subtitles(
             source_path=args.source_path,
             concurrency=args.concurrency,
             src_language=args.src_language,
@@ -435,7 +531,6 @@ def main():
             subtitle_file_format=args.format,
             output=args.output,
         )
-        print("Subtitles file created at {}".format(subtitle_file_path))
     except KeyboardInterrupt:
         return 1
 
