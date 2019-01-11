@@ -31,7 +31,7 @@ DEFAULT_SUBTITLE_FORMAT = 'srt'
 DEFAULT_CONCURRENCY = 10
 DEFAULT_SRC_LANGUAGE = 'en'
 DEFAULT_DST_LANGUAGE = 'en'
-
+LOG = []
 
 def percentile(arr, percent):
     """
@@ -209,7 +209,8 @@ class TranslatorWithAzureApikey(object):  # pylint: disable=too-few-public-metho
             else:
                 return None
 
-        except (requests.exceptions.ConnectionError, KeyboardInterrupt, ValueError, IndexError):
+        except (requests.exceptions.ConnectionError, KeyboardInterrupt, ValueError, IndexError), e:
+            LOG.append(e)
             return None
 
 
@@ -427,6 +428,8 @@ def generate_subtitles(  # pylint: disable=too-many-locals,too-many-arguments
         os.remove(audio_filename)
         print("Cancelling transcription")
         raise
+    except (Exception), e:
+        LOG.append(e)
 
 
 def save_subtitle(regions, transcripts, subtitle_file_format, output, source_path, language):
@@ -531,6 +534,10 @@ def main():
             subtitle_file_format=args.format,
             output=args.output,
         )
+        if not LOG:
+            print("Logs are as below")
+            print(LOG)
+            
     except KeyboardInterrupt:
         return 1
 
